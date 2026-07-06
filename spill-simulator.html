@@ -1,0 +1,1389 @@
+<!--
+  Spill Response Simulator — Erudithe demo
+  ----------------------------------------
+  Single-file, self-contained interactive training simulator.
+  All CSS/JS inline. No external libraries, fonts, images or network calls.
+  Runs offline from file:// in Chrome / Edge.
+
+  IMPORTANT (content governance):
+  The chemical behaviour modelled here is deliberately kept at a generic,
+  training-plausible level (e.g. "wrong neutraliser on acid -> vigorous
+  reaction, heat and fumes"). There is NO real dosing, concentration or
+  procedural detail. This content MUST be reviewed and validated by a
+  suitably qualified subject-matter expert (SME) before any use in real
+  workplace training.
+
+  Australian English spelling is used throughout the UI.
+-->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spill Response Simulator</title>
+<style>
+  /* ============================================================
+     PALETTE
+     Deep greens = brand tone. Warm neutrals = bench.
+     Amber/red reserved EXCLUSIVELY for hazards & warnings.
+     ============================================================ */
+  :root{
+    --green-dark:#1B3B2A;
+    --green-mid:#2E6B3F;
+    --green-accent:#8FBF6B;
+    --green-soft:#dcebd0;
+    --bench:#e9ddc7;
+    --bench-edge:#d4c3a3;
+    --bench-dark:#c9b591;
+    --neutral-100:#faf8f3;
+    --neutral-200:#efe9dd;
+    --ink:#20302a;
+    --ink-soft:#4d5f56;
+    --card:#ffffff;
+    --hazard-amber:#f2a736;
+    --hazard-amber-deep:#e07d1a;
+    --hazard-red:#d63a2f;
+    --shadow:0 8px 24px rgba(27,59,42,.18);
+    --shadow-soft:0 3px 10px rgba(27,59,42,.12);
+  }
+
+  *{box-sizing:border-box;}
+  html,body{margin:0;height:100%;}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    color:var(--ink);
+    background:radial-gradient(120% 120% at 50% 0%, #24523a 0%, var(--green-dark) 60%, #12271c 100%);
+    overflow:hidden;
+    user-select:none;
+    -webkit-user-select:none;
+  }
+
+  /* Stage: fixed 16:9, scaled to fit viewport */
+  #scaler{
+    position:absolute; inset:0;
+    display:flex; align-items:center; justify-content:center;
+  }
+  #stage{
+    position:relative;
+    width:1280px; height:720px;
+    background:var(--neutral-100);
+    border-radius:18px;
+    overflow:hidden;
+    box-shadow:0 30px 80px rgba(0,0,0,.45);
+    transform-origin:center center;
+  }
+
+  /* ---------- Top instruction / status strip ---------- */
+  #topbar{
+    position:absolute; top:0; left:0; right:0; height:66px;
+    background:linear-gradient(180deg,var(--green-dark),var(--green-mid));
+    color:#fff;
+    display:flex; align-items:center; gap:18px;
+    padding:0 22px;
+    z-index:40;
+  }
+  #objTag{
+    font-size:11px; letter-spacing:.14em; text-transform:uppercase;
+    color:var(--green-accent); font-weight:700;
+  }
+  #objText{ font-size:19px; font-weight:600; line-height:1.15; }
+  #objWrap{ flex:1; min-width:0; }
+
+  /* Timer */
+  #timerWrap{ display:flex; align-items:center; gap:12px; }
+  #timerDigits{
+    font-variant-numeric:tabular-nums;
+    font-size:26px; font-weight:700; min-width:64px; text-align:right;
+    letter-spacing:.02em;
+  }
+  #timerBarOuter{
+    width:150px; height:8px; border-radius:6px;
+    background:rgba(255,255,255,.18); overflow:hidden;
+  }
+  #timerBarInner{
+    height:100%; width:100%;
+    background:var(--green-accent);
+    border-radius:6px;
+    transition:width .95s linear, background-color .4s ease;
+  }
+  .timer-amber #timerBarInner{ background:var(--hazard-amber); }
+  .timer-red #timerBarInner{ background:var(--hazard-red); }
+  .timer-amber #timerDigits{ color:var(--hazard-amber); }
+  .timer-red #timerDigits{ color:#ffb4ae; animation:pulseDigit 1s infinite; }
+  @keyframes pulseDigit{50%{opacity:.55;}}
+
+  /* Step tracker pips */
+  #steps{ display:flex; gap:8px; align-items:center; }
+  .pip{
+    display:flex; align-items:center; gap:6px;
+    font-size:11px; font-weight:700; letter-spacing:.06em;
+    padding:5px 10px; border-radius:20px;
+    background:rgba(255,255,255,.10); color:rgba(255,255,255,.7);
+    transition:all .3s ease;
+  }
+  .pip .dot{ width:8px;height:8px;border-radius:50%;background:rgba(255,255,255,.35); }
+  .pip.active{ background:rgba(143,191,107,.22); color:#fff; }
+  .pip.active .dot{ background:var(--green-accent); box-shadow:0 0 0 4px rgba(143,191,107,.25); }
+  .pip.done{ background:rgba(143,191,107,.9); color:var(--green-dark); }
+  .pip.done .dot{ background:var(--green-dark); }
+
+  /* ---------- Scene ---------- */
+  #scene{ position:absolute; top:66px; left:0; right:0; bottom:0; }
+  #sceneSvg{ position:absolute; inset:0; width:100%; height:100%; }
+
+  .clickable{ cursor:pointer; }
+  .interactive-glow{ animation:glowPulse 2.2s ease-in-out infinite; }
+  @keyframes glowPulse{
+    0%,100%{ filter:drop-shadow(0 0 0 rgba(143,191,107,0)); }
+    50%{ filter:drop-shadow(0 0 10px rgba(143,191,107,.85)); }
+  }
+
+  /* Draggable items are HTML overlays for smooth pointer dragging */
+  .drag-item{
+    position:absolute;
+    cursor:grab;
+    touch-action:none;
+    transition:transform .15s ease, box-shadow .15s ease;
+    z-index:20;
+  }
+  .drag-item:active{ cursor:grabbing; }
+  .drag-item.dragging{
+    z-index:60; transition:none;
+    filter:drop-shadow(0 12px 18px rgba(0,0,0,.35));
+    transform:scale(1.06);
+  }
+  .drag-item.used{ opacity:.28; pointer-events:none; filter:grayscale(.6); }
+  .drag-item:focus-visible{ outline:3px solid var(--green-accent); outline-offset:3px; border-radius:12px; }
+
+  .zone-hot{ animation:zoneHot 1s ease-in-out infinite; }
+  @keyframes zoneHot{ 50%{ filter:drop-shadow(0 0 12px rgba(143,191,107,.9)); } }
+
+  /* ---------- Cards / overlays ---------- */
+  .overlay{
+    position:absolute; inset:0; z-index:80;
+    display:flex; align-items:center; justify-content:center;
+    background:rgba(18,39,28,.55);
+    backdrop-filter:blur(3px);
+  }
+  .card{
+    background:var(--card); border-radius:20px;
+    box-shadow:var(--shadow);
+    padding:40px 46px;
+    max-width:840px; width:86%;
+    max-height:86%;
+    overflow:auto;
+    animation:cardIn .35s cubic-bezier(.2,.8,.3,1);
+  }
+  @keyframes cardIn{ from{ opacity:0; transform:translateY(18px) scale(.98);} to{opacity:1;transform:none;} }
+
+  h1{ font-size:38px; margin:0 0 6px; color:var(--green-dark); letter-spacing:-.01em; }
+  .subtitle{ font-size:15px; color:var(--green-mid); font-weight:700; letter-spacing:.08em; text-transform:uppercase; margin-bottom:22px;}
+  p{ font-size:16px; line-height:1.55; color:var(--ink-soft); }
+
+  .btn{
+    display:inline-flex; align-items:center; gap:10px;
+    background:var(--green-mid); color:#fff;
+    border:none; border-radius:12px;
+    font-size:17px; font-weight:700;
+    padding:14px 26px; cursor:pointer;
+    box-shadow:var(--shadow-soft);
+    transition:transform .12s ease, background-color .2s ease;
+  }
+  .btn:hover{ background:var(--green-dark); transform:translateY(-1px); }
+  .btn:active{ transform:translateY(0); }
+  .btn.secondary{ background:var(--green-soft); color:var(--green-dark); }
+  .btn.secondary:hover{ background:var(--green-accent); }
+  .btn:focus-visible{ outline:3px solid var(--green-accent); outline-offset:3px; }
+
+  .brief-line{
+    display:inline-block; margin-top:18px;
+    font-size:14px; font-weight:700; color:var(--hazard-amber-deep);
+    letter-spacing:.04em;
+  }
+
+  .wordmark{
+    position:absolute; bottom:14px; right:20px;
+    font-size:13px; letter-spacing:.28em; text-transform:uppercase;
+    color:rgba(255,255,255,.55); font-weight:700; z-index:90;
+    pointer-events:none;
+  }
+  .card .wordmark-in{
+    display:block; text-align:right; margin-top:24px;
+    font-size:12px; letter-spacing:.28em; text-transform:uppercase;
+    color:#b9c6bd; font-weight:700;
+  }
+
+  /* ---------- Toast (transient guidance) ---------- */
+  #toast{
+    position:absolute; left:50%; bottom:26px; transform:translateX(-50%) translateY(20px);
+    background:var(--green-dark); color:#fff;
+    padding:13px 22px; border-radius:12px;
+    font-size:15px; font-weight:600;
+    box-shadow:var(--shadow); z-index:70;
+    opacity:0; pointer-events:none;
+    transition:opacity .3s ease, transform .3s ease;
+    max-width:70%;
+  }
+  #toast.show{ opacity:1; transform:translateX(-50%) translateY(0); }
+  #toast.warn{ background:var(--hazard-amber-deep); }
+  #toast.bad{ background:var(--hazard-red); }
+
+  /* ---------- Amber danger flash ---------- */
+  #flash{
+    position:absolute; inset:0; z-index:75; pointer-events:none;
+    background:var(--hazard-amber); opacity:0;
+  }
+  #flash.fire{ animation:flashAmber .9s ease; }
+  @keyframes flashAmber{ 0%{opacity:0;} 15%{opacity:.7;} 100%{opacity:0;} }
+  #flash.fire-red{ animation:flashRed .9s ease; background:var(--hazard-red);}
+  @keyframes flashRed{ 0%{opacity:0;} 15%{opacity:.65;} 100%{opacity:0;} }
+
+  /* ---------- Debrief specifics ---------- */
+  .debrief-grid{ display:grid; grid-template-columns:1.15fr .85fr; gap:30px; }
+  .timeline{ list-style:none; padding:0; margin:14px 0 0; }
+  .timeline li{
+    display:flex; align-items:flex-start; gap:12px;
+    padding:9px 0; border-bottom:1px solid var(--neutral-200);
+    font-size:15px;
+  }
+  .tl-badge{
+    flex:none; width:24px; height:24px; border-radius:50%;
+    display:flex; align-items:center; justify-content:center;
+    font-size:14px; font-weight:800; color:#fff; margin-top:1px;
+  }
+  .tl-ok{ background:var(--green-mid); }
+  .tl-order{ background:var(--hazard-amber); }
+  .tl-wrong{ background:var(--hazard-red); }
+  .tl-skip{ background:#9aa8a0; }
+  .tl-main{ font-weight:700; color:var(--ink); }
+  .tl-sub{ font-size:13px; color:var(--ink-soft); }
+  .tl-time{ margin-left:auto; font-variant-numeric:tabular-nums; font-size:13px; color:#9aa8a0; padding-left:10px; }
+
+  .real-lab{
+    background:linear-gradient(180deg,var(--green-soft),#eef6e6);
+    border-left:5px solid var(--green-mid);
+    border-radius:12px; padding:18px 20px; margin-top:6px;
+  }
+  .real-lab h3{ margin:0 0 8px; font-size:14px; letter-spacing:.1em; text-transform:uppercase; color:var(--green-mid);}
+  .real-lab p{ margin:0; color:var(--green-dark); font-size:15.5px; line-height:1.5; }
+
+  .score-ring{ display:flex; align-items:center; gap:18px; margin-bottom:18px; }
+  .ring{ position:relative; width:104px; height:104px; flex:none; }
+  .ring svg{ transform:rotate(-90deg); }
+  .ring .num{
+    position:absolute; inset:0; display:flex; flex-direction:column;
+    align-items:center; justify-content:center;
+  }
+  .ring .num b{ font-size:32px; color:var(--green-dark); line-height:1; }
+  .ring .num span{ font-size:11px; letter-spacing:.1em; color:var(--ink-soft); text-transform:uppercase; }
+
+  .verdict-tag{
+    display:inline-block; padding:6px 14px; border-radius:20px;
+    font-size:13px; font-weight:800; letter-spacing:.08em; text-transform:uppercase;
+    margin-bottom:10px;
+  }
+  .verdict-pass{ background:var(--green-soft); color:var(--green-dark); }
+  .verdict-fail{ background:#fbe0dd; color:var(--hazard-red); }
+
+  .coach-row{ margin-top:14px; }
+  .coach-row .lbl{ font-size:12px; letter-spacing:.1em; text-transform:uppercase; color:var(--ink-soft); font-weight:800; }
+  .coach-row .val{ font-size:15.5px; color:var(--ink); font-weight:600; }
+  .coach-row.fix .val{ color:var(--hazard-amber-deep); }
+
+  .rubric{ margin-top:16px; font-size:13px; }
+  .rubric div{ display:flex; justify-content:space-between; padding:5px 0; border-bottom:1px dashed var(--neutral-200); color:var(--ink-soft); }
+  .rubric b{ color:var(--green-dark); }
+
+  .hidden{ display:none !important; }
+  .center{ text-align:center; }
+</style>
+
+<div id="scaler">
+  <div id="stage">
+
+    <!-- ================= TOP BAR ================= -->
+    <div id="topbar">
+      <div id="objWrap">
+        <div id="objTag">Objective</div>
+        <div id="objText">Preparing scenario…</div>
+      </div>
+      <div id="steps"></div>
+      <div id="timerWrap">
+        <div id="timerBarOuter"><div id="timerBarInner"></div></div>
+        <div id="timerDigits">1:30</div>
+      </div>
+    </div>
+
+    <!-- ================= SCENE ================= -->
+    <div id="scene">
+      <svg id="sceneSvg" viewBox="0 0 1280 654" preserveAspectRatio="xMidYMid slice">
+        <defs>
+          <radialGradient id="benchGrad" cx="50%" cy="30%" r="90%">
+            <stop offset="0%" stop-color="#efe4cf"/>
+            <stop offset="100%" stop-color="#e0d0b2"/>
+          </radialGradient>
+          <linearGradient id="sinkGrad" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#c8d2d6"/>
+            <stop offset="100%" stop-color="#9fb0b6"/>
+          </linearGradient>
+          <linearGradient id="cabGrad" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#d9e6ea"/>
+            <stop offset="100%" stop-color="#bccdd3"/>
+          </linearGradient>
+          <filter id="soft" x="-40%" y="-40%" width="180%" height="180%">
+            <feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#1B3B2A" flood-opacity="0.18"/>
+          </filter>
+          <filter id="softsm" x="-40%" y="-40%" width="180%" height="180%">
+            <feDropShadow dx="0" dy="3" stdDeviation="4" flood-color="#1B3B2A" flood-opacity="0.20"/>
+          </filter>
+          <radialGradient id="fumeGrad" cx="50%" cy="60%" r="60%">
+            <stop offset="0%" stop-color="#ffffff" stop-opacity="0.9"/>
+            <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
+          </radialGradient>
+        </defs>
+
+        <!-- Floor -->
+        <rect x="0" y="0" width="1280" height="654" fill="#f3eee3"/>
+
+        <!-- Fume cupboard edge (top-left back wall element) -->
+        <g filter="url(#soft)">
+          <rect x="60" y="20" width="360" height="120" rx="14" fill="url(#cabGrad)"/>
+          <rect x="60" y="20" width="360" height="30" rx="14" fill="#aebfc5"/>
+          <text x="240" y="40" text-anchor="middle" font-size="14" font-weight="700" fill="#5c6f75" letter-spacing="2">FUME CUPBOARD</text>
+          <rect x="78" y="60" width="150" height="66" rx="8" fill="#eef4f6" opacity="0.7"/>
+          <rect x="244" y="60" width="150" height="66" rx="8" fill="#eef4f6" opacity="0.7"/>
+        </g>
+
+        <!-- Bench surface -->
+        <g filter="url(#soft)">
+          <rect x="150" y="150" width="980" height="440" rx="26" fill="url(#benchGrad)" stroke="#d4c3a3" stroke-width="3"/>
+          <rect x="150" y="150" width="980" height="26" rx="26" fill="#f2e9d6" opacity="0.7"/>
+        </g>
+
+        <!-- Sink (top-right of bench) -->
+        <g filter="url(#softsm)">
+          <rect x="940" y="196" width="150" height="112" rx="16" fill="url(#sinkGrad)"/>
+          <rect x="958" y="214" width="114" height="78" rx="10" fill="#8aa0a7"/>
+          <rect x="1006" y="176" width="18" height="34" rx="9" fill="#b8c4c8"/>
+          <circle cx="1015" cy="176" r="9" fill="#cdd7da"/>
+        </g>
+
+        <!-- ============ SPILL GROUP (assess target) ============ -->
+        <g id="spillGroup" class="clickable">
+          <!-- puddle scales via #puddle transform; anchor centre ~ (560,430) -->
+          <g id="puddleWrap" transform="translate(560,430)">
+            <g id="puddle">
+              <ellipse id="puddleShape" cx="0" cy="0" rx="120" ry="66" fill="#cfe0c0" opacity="0.85"/>
+              <ellipse id="puddleShine" cx="-26" cy="-16" rx="42" ry="20" fill="#ffffff" opacity="0.25"/>
+            </g>
+            <!-- fume shimmer (solvent only) -->
+            <g id="fumeLayer" opacity="0"></g>
+            <!-- granules layer (fills during containment) -->
+            <g id="granuleLayer"></g>
+          </g>
+
+          <!-- tipped container -->
+          <g id="bottle" transform="translate(470,372) rotate(-58)">
+            <rect x="-22" y="-8" width="118" height="52" rx="16" fill="#dfe7e3" stroke="#b9c6bd" stroke-width="2"/>
+            <rect x="90" y="4" width="26" height="24" rx="6" fill="#c3cfc8"/>
+            <rect x="-14" y="0" width="70" height="36" rx="10" fill="#ffffff" opacity="0.85"/>
+            <text id="bottleLabel" x="21" y="23" text-anchor="middle" font-size="15" font-weight="800" fill="#20302a">?</text>
+          </g>
+
+          <!-- inspect hint ring -->
+          <circle id="assessRing" cx="560" cy="430" r="150" fill="none"
+                  stroke="var(--green-accent)" stroke-width="3" stroke-dasharray="10 12" opacity="0.9"/>
+        </g>
+
+        <!-- ============ ALARM PANEL (alert target) ============ -->
+        <g id="alarmPanel" class="clickable" transform="translate(1150,150)">
+          <rect x="0" y="0" width="96" height="150" rx="16" fill="#f5d9d4" stroke="#e2b3ab" stroke-width="2" filter="url(#softsm)"/>
+          <circle id="alarmLight" cx="48" cy="46" r="26" fill="var(--hazard-red)"/>
+          <circle cx="48" cy="46" r="26" fill="none" stroke="#fff" stroke-width="4" opacity="0.5"/>
+          <rect x="24" y="90" width="48" height="34" rx="8" fill="#fff"/>
+          <text x="48" y="112" text-anchor="middle" font-size="11" font-weight="800" fill="#d63a2f">CALL</text>
+          <text x="48" y="140" text-anchor="middle" font-size="10" font-weight="700" fill="#a8564e" letter-spacing="1">ALARM</text>
+        </g>
+
+        <!-- ============ PPE STATION ============ -->
+        <g id="ppeStation" transform="translate(180,196)">
+          <rect x="0" y="0" width="150" height="150" rx="16" fill="#eaf1e2" stroke="#cfe0c0" stroke-width="2" filter="url(#softsm)"/>
+          <rect x="0" y="0" width="150" height="30" rx="16" fill="var(--green-mid)"/>
+          <text x="75" y="20" text-anchor="middle" font-size="13" font-weight="800" fill="#fff" letter-spacing="1.5">PPE STATION</text>
+          <!-- hooks -->
+          <circle cx="35" cy="46" r="4" fill="#b7c9ab"/>
+          <circle cx="75" cy="46" r="4" fill="#b7c9ab"/>
+          <circle cx="115" cy="46" r="4" fill="#b7c9ab"/>
+        </g>
+
+        <!-- ============ SPILL KIT (contain source) ============ -->
+        <g id="spillKit" transform="translate(150,458)">
+          <rect x="0" y="0" width="316" height="150" rx="16" fill="#3a3f36" filter="url(#softsm)"/>
+          <rect x="8" y="8" width="300" height="134" rx="12" fill="#4a5142"/>
+          <text x="158" y="-10" text-anchor="middle" font-size="13" font-weight="800" fill="#4a5142" letter-spacing="2">SPILL KIT</text>
+          <rect x="8" y="8" width="300" height="22" rx="10" fill="#5c6551"/>
+          <text x="158" y="24" text-anchor="middle" font-size="11" font-weight="800" fill="#dfe7d6" letter-spacing="1.5">OPEN — SELECT CONTAINMENT</text>
+        </g>
+
+        <!-- Technician avatar -->
+        <g id="avatar" transform="translate(720,470)">
+          <ellipse cx="0" cy="150" rx="70" ry="16" fill="#000" opacity="0.10"/>
+          <!-- apron slot -->
+          <g id="avApron" opacity="0">
+            <path d="M-38 40 Q0 30 38 40 L44 140 Q0 150 -44 140 Z" fill="#2E6B3F"/>
+            <path d="M-30 40 Q0 60 30 40" fill="none" stroke="#245532" stroke-width="4"/>
+          </g>
+          <!-- body -->
+          <rect x="-40" y="34" width="80" height="112" rx="26" fill="#e7ecef"/>
+          <!-- arms -->
+          <rect x="-58" y="44" width="24" height="80" rx="12" fill="#e0e6ea"/>
+          <rect x="34" y="44" width="24" height="80" rx="12" fill="#e0e6ea"/>
+          <!-- gloves slot -->
+          <g id="avGloves" opacity="0">
+            <rect x="-60" y="112" width="28" height="30" rx="10" fill="#3b6fb0"/>
+            <rect x="32" y="112" width="28" height="30" rx="10" fill="#3b6fb0"/>
+          </g>
+          <!-- head -->
+          <circle cx="0" cy="4" r="30" fill="#f0d3b8"/>
+          <path d="M-30 -2 Q0 -40 30 -2 Q20 -20 0 -20 Q-20 -20 -30 -2Z" fill="#5b4a3a"/>
+          <!-- goggles slot -->
+          <g id="avGoggles" opacity="0">
+            <rect x="-30" y="-6" width="60" height="20" rx="10" fill="#bfe3ef" stroke="#6aa7bb" stroke-width="3"/>
+            <rect x="-30" y="-2" width="60" height="6" rx="3" fill="#6aa7bb" opacity="0.4"/>
+          </g>
+          <!-- exposure state -->
+          <g id="avExposed" opacity="0">
+            <circle cx="0" cy="4" r="34" fill="none" stroke="var(--hazard-red)" stroke-width="4" stroke-dasharray="6 6"/>
+            <text x="0" y="-44" text-anchor="middle" font-size="26">⚠</text>
+          </g>
+          <text x="0" y="176" text-anchor="middle" font-size="12" font-weight="700" fill="#7a8b82">YOU</text>
+        </g>
+      </svg>
+
+      <!-- Draggable PPE + containment items live here as HTML overlays -->
+      <div id="dragLayer"></div>
+    </div>
+
+    <!-- ================= FX ================= -->
+    <div id="flash"></div>
+    <div id="toast"></div>
+
+    <!-- ================= START OVERLAY ================= -->
+    <div id="startOverlay" class="overlay">
+      <div class="card center">
+        <div class="subtitle">Erudithe Interactive Training</div>
+        <h1>Spill Response Simulator</h1>
+        <p style="max-width:640px;margin:0 auto;">
+          You are the technician on shift. A chemical container has tipped on the
+          bench and its contents are spreading. Your job is to respond the way a
+          trained professional would — calmly, in the right order, before the
+          situation escalates. There is no checklist on the wall. Knowing what to
+          do first is part of the test.
+        </p>
+        <div class="brief-line">Your performance will be analysed.</div>
+        <div style="margin-top:26px;">
+          <button class="btn" id="startBtn">Begin shift ▶</button>
+        </div>
+        <span class="wordmark-in">Erudithe</span>
+      </div>
+    </div>
+
+    <!-- ================= DEBRIEF OVERLAY ================= -->
+    <div id="debriefOverlay" class="overlay hidden">
+      <div class="card" id="debriefCard"></div>
+    </div>
+
+    <div class="wordmark">Erudithe</div>
+  </div>
+</div>
+
+<script>
+"use strict";
+/* ============================================================================
+   SPILL RESPONSE SIMULATOR — state machine + scoring
+   ----------------------------------------------------------------------------
+   STATE MACHINE
+     START -> ASSESS -> ALERT -> PPE -> CONTAIN -> DEBRIEF
+   The learner is NOT forced through this order — the order IS the assessment.
+   Any interaction is accepted; correctness/order is recorded and judged at
+   debrief. Certain actions cause an immediate FAIL transition to DEBRIEF:
+       - touching the spill area without complete PPE  (exposure)
+       - applying the wrong neutraliser / water        (adverse reaction)
+       - timer expiry
+   Successful containment -> DEBRIEF (pass).
+
+   SCORING RUBRIC (0..100), weighted:
+       Sequence correctness .......... 40   (each of ASSESS, ALERT, PPE, CONTAIN
+                                             performed, and in professional order)
+       PPE completeness .............. 20   (all three items before containment)
+       Containment choice ............ 25   (correct absorbent/neutraliser)
+       Time remaining ................ 15   (scaled fraction of 90s left)
+   Score is deliberately SECONDARY to the narrative debrief.
+   ========================================================================== */
+
+/* ---------------- Spill definitions ---------------- */
+/* NOTE: chemistry kept generic & training-plausible. SME validation required. */
+const SPILLS = {
+  acid: {
+    key:'acid',
+    label:'HCl (dil.)',
+    name:'dilute hydrochloric acid',
+    puddleFill:'#f0e39a',          // yellow-tinged
+    correct:'acid_neut',
+    correctName:'acid neutraliser (sodium bicarbonate granules)',
+    exposure:'acid burns to skin and eyes',
+    wrongReaction:'Adding a caustic neutraliser to an acid spill drives a vigorous exothermic reaction — heat, spattering and fumes.'
+  },
+  caustic: {
+    key:'caustic',
+    label:'NaOH soln.',
+    name:'sodium hydroxide solution',
+    puddleFill:'#d7e6ea',          // cloudy
+    correct:'caustic_neut',
+    correctName:'caustic neutraliser (citric acid granules)',
+    exposure:'caustic burns — deep, slow-healing tissue damage',
+    wrongReaction:'Adding an acid neutraliser to a caustic spill drives a vigorous exothermic reaction — heat and fumes.'
+  },
+  solvent: {
+    key:'solvent',
+    label:'Acetone',
+    name:'acetone (a volatile solvent)',
+    puddleFill:'#e8eef0',          // clear-ish, spreads
+    fumes:true,
+    correct:'pads',
+    correctName:'general absorbent pads + spill sock perimeter',
+    exposure:'solvent absorption and inhalation of concentrated vapour',
+    wrongReaction:'Neutraliser granules do nothing useful on a solvent — the volatile pool keeps evaporating and the flammable vapour spreads.'
+  }
+};
+
+/* Containment options shown in the spill kit.
+   id -> {label, swatch, kind} */
+const CONTAINMENTS = [
+  { id:'acid_neut',    label:'Acid\nNeutraliser',    sub:'bicarb granules', color:'#7fb0d8' },
+  { id:'caustic_neut', label:'Caustic\nNeutraliser', sub:'citric granules', color:'#d8a15b' },
+  { id:'pads',         label:'Absorbent\nPads + Sock',sub:'inert',           color:'#c9cdae' },
+  { id:'water',        label:'Water',                sub:'wash bottle',      color:'#6ec7d6' }
+];
+
+/* ---------------- Runtime state ---------------- */
+const G = {
+  state:'START',
+  spill:null,
+  timeLeft:90,
+  timerId:null,
+  timerRate:1,           // multiplier; ALERT skipped -> 1.25 (25% faster)
+  startClock:0,          // ms timestamp of attempt start
+  actions:[],            // {step, ok, order, t, note}
+  assessed:false,
+  alerted:false,
+  ppe:{ gloves:false, goggles:false, apron:false },
+  contained:false,
+  puddleScale:1,
+  spreadId:null,
+  ended:false,
+  lastSpillKey:null,
+  seq:0                  // running order counter of "major" steps
+};
+
+/* ---------------- Element refs ---------------- */
+const $ = s => document.querySelector(s);
+const stage=$('#stage'), objText=$('#objText'), objTag=$('#objTag');
+const stepsEl=$('#steps'), timerDigits=$('#timerDigits'), timerBar=$('#timerBarInner'), timerWrap=$('#topbar');
+const dragLayer=$('#dragLayer'), toast=$('#toast'), flash=$('#flash');
+const spillGroup=$('#spillGroup'), alarmPanel=$('#alarmPanel'), alarmLight=$('#alarmLight');
+const puddle=$('#puddle'), puddleWrap=$('#puddleWrap'), puddleShape=$('#puddleShape');
+const bottleLabel=$('#bottleLabel'), assessRing=$('#assessRing'), fumeLayer=$('#fumeLayer'), granuleLayer=$('#granuleLayer');
+const startOverlay=$('#startOverlay'), debriefOverlay=$('#debriefOverlay'), debriefCard=$('#debriefCard');
+
+/* ---------------- Scaling to viewport ---------------- */
+function rescale(){
+  const s = Math.min(window.innerWidth/1280, window.innerHeight/720);
+  stage.style.transform = 'scale('+s+')';
+}
+window.addEventListener('resize', rescale);
+rescale();
+
+/* ---------------- Objective strip ---------------- */
+const OBJECTIVES = {
+  START:  ['Standby','Preparing scenario…'],
+  ASSESS: ['Your move','A spill has occurred. What is your first move?'],
+  ALERT:  ['Now what?','You know what it is. Who else needs to know?'],
+  PPE:    ['Protect yourself','Others are alerted. Before you touch anything — what about you?'],
+  CONTAIN:['Deal with it','You are protected. Now deal with the spill correctly.'],
+  DONE:   ['Complete','Attempt complete.']
+};
+function setObjective(state){
+  const o = OBJECTIVES[state] || OBJECTIVES.ASSESS;
+  objTag.textContent = o[0];
+  objText.textContent = o[1];
+}
+
+/* ---------------- Step pips ---------------- */
+const STEP_ORDER = ['ASSESS','ALERT','PPE','CONTAIN'];
+function renderSteps(){
+  stepsEl.innerHTML='';
+  STEP_ORDER.forEach(st=>{
+    const done = (st==='ASSESS'&&G.assessed) || (st==='ALERT'&&G.alerted)
+      || (st==='PPE'&&ppeComplete()) || (st==='CONTAIN'&&G.contained);
+    const active = (G.state===st);
+    const pip=document.createElement('div');
+    pip.className='pip'+(done?' done':active?' active':'');
+    pip.innerHTML='<span class="dot"></span>'+st;
+    stepsEl.appendChild(pip);
+  });
+}
+
+/* ---------------- Toast ---------------- */
+let toastId=null;
+function showToast(msg, kind){
+  toast.textContent=msg;
+  toast.className='show'+(kind?(' '+kind):'');
+  clearTimeout(toastId);
+  toastId=setTimeout(()=>{ toast.className=''; }, 3200);
+}
+
+/* ---------------- Helpers ---------------- */
+function ppeComplete(){ return G.ppe.gloves && G.ppe.goggles && G.ppe.apron; }
+function ppeCount(){ return (G.ppe.gloves?1:0)+(G.ppe.goggles?1:0)+(G.ppe.apron?1:0); }
+function nowT(){ return (performance.now() - G.startClock)/1000; }
+function fmtT(sec){ const m=Math.floor(sec/60), s=Math.floor(sec%60); return m+':'+String(s).padStart(2,'0'); }
+
+/* Record a logged action for the debrief timeline.
+   ok: 'ok' | 'order' | 'wrong' | 'skip' */
+function logAction(step, ok, note){
+  G.actions.push({ step, ok, note:note||'', t:nowT() });
+}
+
+/* ============================================================================
+   ATTEMPT LIFECYCLE
+   ========================================================================== */
+function pickSpill(){
+  const keys=Object.keys(SPILLS);
+  let choices=keys;
+  // Ensure a *different* spill from last attempt when possible.
+  if(G.lastSpillKey){ choices = keys.filter(k=>k!==G.lastSpillKey); }
+  const key = choices[Math.floor(Math.random()*choices.length)];
+  G.lastSpillKey=key;
+  return SPILLS[key];
+}
+
+function startAttempt(){
+  // reset runtime
+  G.spill=pickSpill();
+  G.timeLeft=90; G.timerRate=1; G.actions=[]; G.assessed=false; G.alerted=false;
+  G.ppe={gloves:false,goggles:false,apron:false}; G.contained=false;
+  G.puddleScale=1; G.ended=false; G.seq=0;
+  G.startClock=performance.now();
+  G.state='ASSESS';
+
+  // scene reset
+  puddleShape.setAttribute('fill', G.spill.puddleFill);
+  bottleLabel.textContent='?';
+  assessRing.style.opacity='0.9';
+  spillGroup.classList.add('interactive-glow');
+  alarmPanel.classList.remove('interactive-glow');
+  alarmLight.setAttribute('fill','var(--hazard-red)');
+  fumeLayer.innerHTML=''; fumeLayer.setAttribute('opacity','0');
+  granuleLayer.innerHTML='';
+  puddle.setAttribute('transform','scale(1)');
+  ['avGloves','avGoggles','avApron','avExposed'].forEach(id=>$('#'+id).setAttribute('opacity','0'));
+  timerWrap.classList.remove('timer-amber','timer-red');
+  timerBar.style.width='100%';
+
+  startOverlay.classList.add('hidden');
+  debriefOverlay.classList.add('hidden');
+
+  buildDragItems();
+  setObjective('ASSESS');
+  renderSteps();
+  updateTimerUI();
+  startTimer();
+  startSpread();
+  showToast('A container has tipped. Read the scene before you act.');
+}
+
+/* ---------------- Timer ---------------- */
+function startTimer(){
+  clearInterval(G.timerId);
+  G.timerId=setInterval(()=>{
+    G.timeLeft -= G.timerRate;
+    if(G.timeLeft<=0){ G.timeLeft=0; updateTimerUI(); return endAttempt('timeout'); }
+    updateTimerUI();
+  },1000);
+}
+function updateTimerUI(){
+  timerDigits.textContent=fmtT(Math.max(0,G.timeLeft));
+  timerBar.style.width=(Math.max(0,G.timeLeft)/90*100)+'%';
+  timerWrap.classList.toggle('timer-amber', G.timeLeft<=30 && G.timeLeft>10);
+  timerWrap.classList.toggle('timer-red', G.timeLeft<=10);
+}
+
+/* ---------------- Puddle spread (quiet urgency) ---------------- */
+function startSpread(){
+  clearInterval(G.spreadId);
+  G.spreadId=setInterval(()=>{
+    if(G.contained||G.ended) return;
+    // Solvent spreads a touch faster; all slow.
+    const rate = G.spill && G.spill.fumes ? 0.020 : 0.014;
+    G.puddleScale=Math.min(1.6, G.puddleScale+rate);
+    puddle.setAttribute('transform','scale('+G.puddleScale.toFixed(3)+')');
+  }, 700);
+}
+
+/* ============================================================================
+   ASSESS
+   ========================================================================== */
+spillGroup.addEventListener('click', ()=>{
+  if(G.ended || G.state==='START') return;
+
+  // If PPE is complete OR this is a genuine assess (not yet assessed), inspect.
+  // The "touch the spill without PPE" hazard only applies to a CONTAINMENT
+  // touch — inspection is visual, not physical contact — EXCEPT we treat a
+  // click on the spill during CONTAIN-with-no-PPE as reaching in. Handled in
+  // containment drop. Clicking to assess is always safe.
+  if(!G.assessed){
+    G.assessed=true; G.seq++;
+    const order = (G.seq===1); // assessing first is correct order
+    logAction('ASSESS', order?'ok':'order',
+      order? 'Inspected the spill before acting'
+           : 'Inspected the spill, but only after acting');
+    bottleLabel.textContent=G.spill.label;
+    bottleLabel.style.fontSize = G.spill.label.length>7 ? '11' : '15';
+    assessRing.style.opacity='0';
+    spillGroup.classList.remove('interactive-glow');
+    if(G.spill.fumes) enableFumes();
+    // advance objective toward ALERT if we're still early
+    if(G.state==='ASSESS'){ G.state='ALERT'; setObjective('ALERT'); alarmPanel.classList.add('interactive-glow'); }
+    renderSteps();
+    showToast('Identified: '+G.spill.label+' — '+G.spill.name+'. Now, who else needs to know?');
+  } else {
+    showToast('Already identified: '+G.spill.label+'. ('+G.spill.name+')');
+  }
+});
+
+function enableFumes(){
+  fumeLayer.setAttribute('opacity','1');
+  fumeLayer.innerHTML='';
+  for(let i=0;i<3;i++){
+    const c=document.createElementNS('http://www.w3.org/2000/svg','ellipse');
+    c.setAttribute('cx',(-40+i*40)); c.setAttribute('cy','-30');
+    c.setAttribute('rx','26'); c.setAttribute('ry','34');
+    c.setAttribute('fill','url(#fumeGrad)');
+    const an=document.createElementNS('http://www.w3.org/2000/svg','animateTransform');
+    an.setAttribute('attributeName','transform'); an.setAttribute('type','translate');
+    an.setAttribute('values','0 0; 0 -26; 0 0'); an.setAttribute('dur',(2.4+i*0.5)+'s');
+    an.setAttribute('repeatCount','indefinite');
+    const op=document.createElementNS('http://www.w3.org/2000/svg','animate');
+    op.setAttribute('attributeName','opacity'); op.setAttribute('values','0.15;0.5;0.15');
+    op.setAttribute('dur',(2.4+i*0.5)+'s'); op.setAttribute('repeatCount','indefinite');
+    c.appendChild(an); c.appendChild(op); fumeLayer.appendChild(c);
+  }
+}
+
+/* ============================================================================
+   ALERT
+   ========================================================================== */
+alarmPanel.addEventListener('click', ()=>{
+  if(G.ended || G.state==='START') return;
+  if(G.alerted){ showToast('You have already raised the alarm.'); return; }
+  G.alerted=true; G.seq++;
+  // Correct order: alert should come after assess, before PPE/contain.
+  const order = G.assessed && !ppeCount() && !G.contained;
+  logAction('ALERT', order?'ok':'order',
+    order? 'Raised the alarm to notify others'
+         : 'Raised the alarm, out of the ideal order');
+  alarmLight.setAttribute('fill','var(--hazard-amber)');
+  alarmPanel.classList.remove('interactive-glow');
+  flashAlarm();
+  if(G.state==='ALERT'||G.state==='ASSESS'){ G.state='PPE'; setObjective('PPE'); pulsePPE(true); }
+  renderSteps();
+  showToast('Alarm raised — the area has been notified. Now protect yourself before touching the spill.');
+});
+function flashAlarm(){
+  let n=0; const t=setInterval(()=>{
+    alarmLight.setAttribute('opacity', n%2?'1':'0.35'); n++;
+    if(n>5){ clearInterval(t); alarmLight.setAttribute('opacity','1'); }
+  },160);
+}
+
+/* ============================================================================
+   DRAG ITEMS (PPE + containment) — pointer-event based dragging
+   ========================================================================== */
+const PPE_ITEMS = [
+  { id:'gloves',  x:196, y:262, label:'Gloves',  color:'#3b6fb0' },
+  { id:'goggles', x:236, y:262, label:'Goggles', color:'#6aa7bb' },
+  { id:'apron',   x:276, y:262, label:'Apron',   color:'#2E6B3F' }
+];
+
+function buildDragItems(){
+  dragLayer.innerHTML='';
+  // PPE items (hooks in PPE station). Coordinates are in scene-space (px on 1280x654 area shown from y=66).
+  PPE_ITEMS.forEach(it=> dragLayer.appendChild(makeDrag(it.id,'ppe',it)));
+  // Containment items in kit (below the header bar, inside the open case).
+  const baseX=192, baseY=536, gap=72;
+  CONTAINMENTS.forEach((c,i)=>{
+    dragLayer.appendChild(makeDrag(c.id,'contain',{
+      id:c.id, x:baseX+i*gap, y:baseY, label:c.label, sub:c.sub, color:c.color
+    }));
+  });
+  pulsePPE(false);
+}
+
+/* Build a draggable HTML node with an inline SVG glyph */
+function makeDrag(id, kind, cfg){
+  const el=document.createElement('div');
+  el.className='drag-item';
+  el.dataset.id=id; el.dataset.kind=kind;
+  el.tabIndex=0;
+  // position: scene starts at top:66 in stage; dragLayer is inside #scene so use scene coords
+  const W = kind==='ppe'?54:64, H = kind==='ppe'?54:64;
+  el.style.left=(cfg.x - W/2)+'px';
+  el.style.top =(cfg.y - H/2 - 0)+'px';
+  el.style.width=W+'px';
+  el.innerHTML = kind==='ppe' ? ppeGlyph(id,cfg) : containGlyph(cfg);
+  attachDrag(el, kind);
+  return el;
+}
+
+function ppeGlyph(id,cfg){
+  const c=cfg.color;
+  let g='';
+  if(id==='gloves') g=`<path d="M14 22 h26 v20 q0 8 -8 8 h-10 q-8 0 -8 -8 z" fill="${c}"/>
+      <rect x="14" y="8" width="7" height="18" rx="3" fill="${c}"/>
+      <rect x="22" y="4" width="7" height="22" rx="3" fill="${c}"/>
+      <rect x="30" y="6" width="7" height="20" rx="3" fill="${c}"/>`;
+  else if(id==='goggles') g=`<rect x="8" y="20" width="38" height="18" rx="9" fill="#bfe3ef" stroke="${c}" stroke-width="3"/>
+      <path d="M4 26 q-2 4 2 8" stroke="${c}" stroke-width="3" fill="none"/>
+      <path d="M50 26 q2 4 -2 8" stroke="${c}" stroke-width="3" fill="none"/>`;
+  else g=`<path d="M16 12 Q27 6 38 12 L44 46 Q27 52 10 46 Z" fill="${c}"/>
+      <path d="M20 12 Q27 20 34 12" stroke="#1d4a2c" stroke-width="3" fill="none"/>`;
+  return `<svg width="54" height="60" viewBox="0 0 54 60">
+      <g filter="">${g}</g>
+      <text x="27" y="58" text-anchor="middle" font-size="10" font-weight="800" fill="#3a4a41">${cfg.label}</text>
+    </svg>`;
+}
+
+function containGlyph(cfg){
+  const lines=String(cfg.label).split('\n');
+  const txt=lines.map((l,i)=>`<tspan x="32" dy="${i===0?0:11}">${l}</tspan>`).join('');
+  return `<svg width="64" height="72" viewBox="0 0 64 72">
+      <rect x="8" y="6" width="48" height="42" rx="9" fill="${cfg.color}" stroke="#3a3f36" stroke-width="2"/>
+      <rect x="8" y="6" width="48" height="12" rx="6" fill="rgba(255,255,255,.25)"/>
+      <circle cx="18" cy="30" r="2.4" fill="rgba(255,255,255,.6)"/>
+      <circle cx="30" cy="36" r="2.4" fill="rgba(255,255,255,.6)"/>
+      <circle cx="42" cy="28" r="2.4" fill="rgba(255,255,255,.6)"/>
+      <circle cx="46" cy="38" r="2.4" fill="rgba(255,255,255,.6)"/>
+      <text x="32" y="54" text-anchor="middle" font-size="8.5" font-weight="800" fill="#2b352f">${txt}</text>
+    </svg>`;
+}
+
+function pulsePPE(on){
+  dragLayer.querySelectorAll('.drag-item[data-kind="ppe"]').forEach(el=>{
+    el.classList.toggle('zone-hot', !!on && !el.classList.contains('used'));
+  });
+}
+function pulseContain(on){
+  dragLayer.querySelectorAll('.drag-item[data-kind="contain"]').forEach(el=>{
+    el.classList.toggle('zone-hot', !!on && !el.classList.contains('used'));
+  });
+}
+
+/* ---------------- Pointer dragging ---------------- */
+function attachDrag(el, kind){
+  let dragging=false, sx=0, sy=0, ox=0, oy=0;
+  const sceneRect = ()=>$('#scene').getBoundingClientRect();
+
+  function down(e){
+    if(el.classList.contains('used')||G.ended) return;
+    dragging=true; el.classList.add('dragging');
+    el.setPointerCapture?.(e.pointerId);
+    const r=el.getBoundingClientRect();
+    sx=e.clientX; sy=e.clientY; ox=r.left; oy=r.top;
+    e.preventDefault();
+  }
+  function move(e){
+    if(!dragging) return;
+    const scale=Math.min(window.innerWidth/1280, window.innerHeight/720);
+    const sr=sceneRect();
+    const nx=(ox - sr.left + (e.clientX-sx))/scale;
+    const ny=(oy - sr.top  + (e.clientY-sy))/scale;
+    el.style.left=nx+'px'; el.style.top=ny+'px';
+  }
+  function up(e){
+    if(!dragging) return;
+    dragging=false; el.classList.remove('dragging');
+    const dropX=e.clientX, dropY=e.clientY;
+    handleDrop(el, kind, dropX, dropY);
+  }
+  el.addEventListener('pointerdown',down);
+  el.addEventListener('pointermove',move);
+  el.addEventListener('pointerup',up);
+  el.addEventListener('pointercancel',()=>{ dragging=false; el.classList.remove('dragging'); });
+  // keyboard fallback: Enter "applies" to the natural target
+  el.addEventListener('keydown',e=>{
+    if(e.key==='Enter'||e.key===' '){ e.preventDefault(); keyboardApply(el,kind); }
+  });
+}
+
+/* Does a screen point fall over an SVG element's bbox? */
+function overElement(svgSelector, clientX, clientY){
+  const node=$(svgSelector);
+  if(!node) return false;
+  const r=node.getBoundingClientRect();
+  return clientX>=r.left && clientX<=r.right && clientY>=r.top && clientY<=r.bottom;
+}
+
+function handleDrop(el, kind, cx, cy){
+  const id=el.dataset.id;
+  if(kind==='ppe'){
+    if(overElement('#avatar', cx, cy)){
+      applyPPE(id, el);
+    } else {
+      snapBack(el, kind, id);
+    }
+  } else { // containment
+    if(overElement('#spillGroup', cx, cy) || overElement('#puddleWrap', cx, cy)){
+      applyContainment(id, el);
+    } else {
+      snapBack(el, kind, id);
+    }
+  }
+}
+
+function snapBack(el, kind, id){
+  // return to origin position
+  let home;
+  if(kind==='ppe') home=PPE_ITEMS.find(p=>p.id===id);
+  else{
+    const i=CONTAINMENTS.findIndex(c=>c.id===id);
+    home={x:192+i*72, y:536};
+  }
+  const W=kind==='ppe'?54:64, H=kind==='ppe'?54:64;
+  el.style.left=(home.x - W/2)+'px';
+  el.style.top =(home.y - H/2)+'px';
+}
+
+function keyboardApply(el, kind){
+  if(kind==='ppe') applyPPE(el.dataset.id, el);
+  else applyContainment(el.dataset.id, el);
+}
+
+/* ============================================================================
+   PPE application
+   ========================================================================== */
+function applyPPE(id, el){
+  if(G.ppe[id]) return;
+  G.ppe[id]=true;
+  el.classList.add('used'); el.classList.remove('zone-hot');
+  $('#av'+id.charAt(0).toUpperCase()+id.slice(1)).setAttribute('opacity','1');
+
+  if(ppeCount()===1){ G.seq++;
+    // first PPE piece marks the PPE step start; order-correct if assess+alert done
+    const order = G.assessed && G.alerted && !G.contained;
+    logAction('PPE', order?'ok':'order',
+      order? 'Began donning PPE at the right time' : 'Began donning PPE, out of order');
+    // Consequence of skipping ALERT: once the learner moves on to handling the
+    // spill without having raised the alarm, no one else knows — model the added
+    // pressure by running the countdown 25% faster for the rest of the attempt.
+    if(!G.alerted && G.timerRate===1){
+      G.timerRate=1.25;
+      showToast('You have not raised the alarm — no one else knows. The clock is against you.', 'warn');
+    }
+  }
+  if(ppeComplete()){
+    if(G.state==='PPE'||G.state==='ALERT'||G.state==='ASSESS'){
+      G.state='CONTAIN'; setObjective('CONTAIN'); pulseContain(true); pulsePPE(false);
+    }
+    showToast('Fully protected — gloves, goggles and apron on. Now contain the spill.');
+  } else {
+    const missing=[]; if(!G.ppe.gloves)missing.push('gloves'); if(!G.ppe.goggles)missing.push('goggles'); if(!G.ppe.apron)missing.push('apron');
+    showToast('PPE on: '+ (3-missing.length)+'/3. Still need: '+missing.join(', ')+'.');
+  }
+  renderSteps();
+}
+
+/* ============================================================================
+   CONTAINMENT application — the consequence engine
+   ========================================================================== */
+function applyContainment(id, el){
+  if(G.ended) return;
+
+  // HARD RULE: touching the spill area without complete PPE = exposure fail.
+  if(!ppeComplete()){
+    logAction('CONTAIN','wrong','Reached into the spill without full PPE ('+ppeCount()+'/3)');
+    return endAttempt('exposure', {item:id});
+  }
+
+  const spill=G.spill;
+  // Record the containment action.
+  G.seq++;
+  if(id===spill.correct){
+    G.contained=true;
+    const order = G.assessed && G.alerted; // in-order if earlier steps done
+    logAction('CONTAIN', order?'ok':'order',
+      'Applied '+containName(id)+' — the correct containment');
+    el.classList.add('used');
+    successContainment();
+    return; // endAttempt called after animation
+  }
+
+  // Wrong choices ---------------------------------------------------------
+  el.classList.add('used');
+  if(id==='water'){
+    logAction('CONTAIN','wrong','Applied water — spread the spill');
+    waterReaction();
+    return endAttempt('water',{item:id});
+  }
+  // wrong neutraliser / pads-on-neutralisable etc.
+  const isNeutraliser = (id==='acid_neut'||id==='caustic_neut');
+  if((spill.key==='acid'||spill.key==='caustic') && isNeutraliser){
+    logAction('CONTAIN','wrong','Applied '+containName(id)+' — wrong neutraliser');
+    adverseReaction();
+    return endAttempt('wrong_neutraliser',{item:id});
+  }
+  // any other mismatch (e.g. neutraliser on solvent, pads on acid)
+  logAction('CONTAIN','wrong','Applied '+containName(id)+' — ineffective for this spill');
+  adverseReaction(true);
+  return endAttempt('wrong_containment',{item:id});
+}
+
+function containName(id){
+  const c=CONTAINMENTS.find(c=>c.id===id);
+  return c ? c.label.replace('\n',' ').toLowerCase() : id;
+}
+
+/* ---------------- Success animation ---------------- */
+function successContainment(){
+  pulseContain(false);
+  granuleLayer.innerHTML='';
+  // sprinkle granules that darken, puddle shrinks to nothing
+  const N=26;
+  for(let i=0;i<N;i++){
+    const g=document.createElementNS('http://www.w3.org/2000/svg','circle');
+    const a=Math.random()*Math.PI*2, r=Math.random()*110;
+    g.setAttribute('cx',(Math.cos(a)*r).toFixed(1));
+    g.setAttribute('cy',(Math.sin(a)*r*0.55).toFixed(1));
+    g.setAttribute('r',(2+Math.random()*2.5).toFixed(1));
+    g.setAttribute('fill','#c8b06a'); g.setAttribute('opacity','0');
+    granuleLayer.appendChild(g);
+    setTimeout(()=>{ g.setAttribute('opacity','0.95'); g.setAttribute('fill','#6a5a34'); }, 40*i);
+  }
+  let s=G.puddleScale;
+  const shrink=setInterval(()=>{
+    s-=0.06; if(s<=0.02){ s=0.02; clearInterval(shrink);
+      setTimeout(()=>endAttempt('success'), 480);
+    }
+    puddle.setAttribute('transform','scale('+s.toFixed(3)+')');
+    puddle.setAttribute('opacity', Math.max(0.15, s).toFixed(2));
+  },60);
+  granuleLayer.setAttribute('transform','scale('+Math.min(1.2,G.puddleScale)+')');
+  showToast('Absorbing… the spill is being neutralised and contained.');
+}
+
+/* ---------------- Adverse reaction animation ---------------- */
+function adverseReaction(mild){
+  flash.className='fire'; setTimeout(()=>flash.className='',900);
+  // puddle bubbles + expands ~40% + fume plume
+  const target=Math.min(2.4, G.puddleScale*1.4);
+  let s=G.puddleScale;
+  const grow=setInterval(()=>{
+    s+=0.05; if(s>=target){ clearInterval(grow); }
+    puddle.setAttribute('transform','scale('+s.toFixed(3)+')');
+  },40);
+  puddleShape.setAttribute('fill', mild?'#e7d59a':'#f0b840');
+  // bubbles
+  for(let i=0;i<10;i++){
+    const b=document.createElementNS('http://www.w3.org/2000/svg','circle');
+    b.setAttribute('cx',(-60+Math.random()*120).toFixed(0));
+    b.setAttribute('cy',(-20+Math.random()*40).toFixed(0));
+    b.setAttribute('r','0'); b.setAttribute('fill','#fff'); b.setAttribute('opacity','0.7');
+    granuleLayer.appendChild(b);
+    const an=document.createElementNS('http://www.w3.org/2000/svg','animate');
+    an.setAttribute('attributeName','r'); an.setAttribute('values','0;7;0');
+    an.setAttribute('dur',(0.6+Math.random()*0.6)+'s'); an.setAttribute('repeatCount','3');
+    b.appendChild(an);
+  }
+  // fume plume
+  enableFumesPlume();
+}
+function enableFumesPlume(){
+  fumeLayer.setAttribute('opacity','1'); fumeLayer.innerHTML='';
+  for(let i=0;i<4;i++){
+    const c=document.createElementNS('http://www.w3.org/2000/svg','ellipse');
+    c.setAttribute('cx',(-50+i*34)); c.setAttribute('cy','-30');
+    c.setAttribute('rx','30'); c.setAttribute('ry','42'); c.setAttribute('fill','url(#fumeGrad)');
+    const an=document.createElementNS('http://www.w3.org/2000/svg','animateTransform');
+    an.setAttribute('attributeName','transform'); an.setAttribute('type','translate');
+    an.setAttribute('values','0 0; 0 -70; 0 -120'); an.setAttribute('dur',(1.6+i*0.3)+'s');
+    an.setAttribute('repeatCount','indefinite');
+    const op=document.createElementNS('http://www.w3.org/2000/svg','animate');
+    op.setAttribute('attributeName','opacity'); op.setAttribute('values','0.6;0'); op.setAttribute('dur',(1.6+i*0.3)+'s');
+    op.setAttribute('repeatCount','indefinite');
+    c.appendChild(an); c.appendChild(op); fumeLayer.appendChild(c);
+  }
+}
+
+/* ---------------- Water reaction ---------------- */
+function waterReaction(){
+  flash.className='fire'; setTimeout(()=>flash.className='',900);
+  // puddle spreads toward the bench edge (grow + drift down-right)
+  let s=G.puddleScale, dx=0, dy=0;
+  const t=setInterval(()=>{
+    s+=0.05; dx+=2; dy+=1.4;
+    if(s>=2.2){ clearInterval(t); }
+    puddle.setAttribute('transform','translate('+dx+','+dy+') scale('+s.toFixed(3)+')');
+  },40);
+  puddleShape.setAttribute('fill','#cfe0ea');
+}
+
+/* ============================================================================
+   PPE-less spill touch => exposure fail (avatar exposed state)
+   ========================================================================== */
+function showExposure(){
+  flash.className='fire'; setTimeout(()=>flash.className='',900);
+  $('#avExposed').setAttribute('opacity','1');
+  // tint gloves-less hands red-ish via a quick overlay on avatar body
+  const body=$('#avatar');
+  body.classList.add('interactive-glow');
+  setTimeout(()=>body.classList.remove('interactive-glow'),1200);
+}
+
+/* ============================================================================
+   END ATTEMPT + DEBRIEF
+   ========================================================================== */
+function endAttempt(reason, extra){
+  if(G.ended) return;
+  G.ended=true;
+  clearInterval(G.timerId); clearInterval(G.spreadId);
+  spillGroup.classList.remove('interactive-glow');
+  alarmPanel.classList.remove('interactive-glow');
+  pulsePPE(false); pulseContain(false);
+
+  if(reason==='exposure') showExposure();
+
+  // mark any un-done steps as skipped in the record (for timeline completeness)
+  const scoreObj=scoreAttempt(reason);
+  const passed = (reason==='success');
+
+  setObjective('DONE');
+  G.state='DEBRIEF';
+
+  const results={
+    spillType:G.spill.key,
+    spillName:G.spill.name,
+    actions:G.actions.map(a=>({step:a.step, result:a.ok, note:a.note, t:+a.t.toFixed(1)})),
+    score:scoreObj.score,
+    passed,
+    timeRemaining:Math.max(0,Math.round(G.timeLeft)),
+    reason
+  };
+  // Results hook for later SCORM wiring (SCORM itself NOT implemented here).
+  try{ window.onSimComplete?.(results); }catch(e){}
+  console.log('[SpillSim] attempt complete', results);
+
+  setTimeout(()=>renderDebrief(reason, extra, scoreObj, results), reason==='success'?200:650);
+}
+
+/* ---------------- Scoring ---------------- */
+function scoreAttempt(reason){
+  // Sequence correctness (40): steps performed & in professional order.
+  const majorSteps=['ASSESS','ALERT','PPE','CONTAIN'];
+  const performedOrder = G.actions
+    .filter(a=>majorSteps.includes(a.step))
+    // first occurrence of each step
+    .filter((a,i,arr)=>arr.findIndex(x=>x.step===a.step)===i)
+    .map(a=>a.step);
+  let seqPts=0;
+  const idealIndex={ASSESS:0,ALERT:1,PPE:2,CONTAIN:3};
+  // +7 for each step performed at all; +3 bonus if in correct relative order
+  majorSteps.forEach(st=>{ if(performedOrder.includes(st)) seqPts+=7; });
+  // order bonus: longest correctly-ordered prefix
+  let lastIdx=-1, ordered=true;
+  performedOrder.forEach(st=>{ if(idealIndex[st]<lastIdx) ordered=false; lastIdx=idealIndex[st]; });
+  if(ordered && performedOrder.length>=2) seqPts+=12;
+  seqPts=Math.min(40,seqPts);
+
+  // PPE completeness (20)
+  const ppePts = Math.round(ppeCount()/3*20);
+
+  // Containment choice (25)
+  let containPts=0;
+  if(reason==='success') containPts=25;
+  else if(reason==='wrong_neutraliser'||reason==='wrong_containment') containPts=5;
+  else containPts=0;
+
+  // Time remaining (15)
+  const timePts = Math.round(Math.max(0,G.timeLeft)/90*15);
+
+  const score=Math.max(0,Math.min(100, seqPts+ppePts+containPts+timePts));
+  return { score, seqPts, ppePts, containPts, timePts, performedOrder, ordered };
+}
+
+/* ---------------- "In a real lab…" template logic ---------------- */
+function realLabParagraph(reason){
+  const s=G.spill;
+  const alerted=G.alerted, assessed=G.assessed, ppe=ppeComplete();
+  switch(reason){
+    case 'success':
+      if(assessed && alerted && ppe)
+        return `Textbook. You identified the ${s.name} before touching it, brought others into the loop, protected yourself, and used the ${s.correctName}. In a real lab, that sequence is exactly what keeps a spill a minor event instead of an incident report.`;
+      if(!alerted)
+        return `You contained the ${s.name} correctly — but no one else in the lab knew it had happened. Containment without notification puts the next person through the door at risk, and means no second set of eyes if you had been overcome.`;
+      return `You contained the spill correctly, but the order was ragged. In a real lab the right actions in the wrong sequence still expose you — assessment and protection have to come before your hands are anywhere near the chemical.`;
+    case 'exposure':
+      return `You reached into the ${s.name} before you were fully protected. In a real lab that is ${s.exposure} — the kind of injury that ends a shift and sometimes a career. PPE is not a formality you do afterwards; it is the thing that lets you touch the problem at all.`;
+    case 'wrong_neutraliser':
+      return `${s.wrongReaction} In a real lab you would now be managing a hotter, larger, fume-producing spill instead of the one you started with${assessed?'':' — and because you never confirmed what the chemical was, you were guessing'}.`;
+    case 'wrong_containment':
+      return `${s.wrongReaction} ${assessed?'You knew what it was, but reached for the wrong tool.':'You treated the spill before identifying it — so the tool was always going to be a guess.'} In a real lab, the wrong containment wastes the minutes that matter most.`;
+    case 'water':
+      return `Water on a ${s.name} spill spreads it toward the bench edge and the floor — you made it bigger, not safer. In a real lab that turns a contained bench spill into a room-scale clean-up, and with a solvent it also carries the hazard further.`;
+    case 'timeout':
+      let msg=`The clock ran out with the ${s.name} still on the bench. In a real lab the spill didn't wait — it kept spreading and evaporating while the decision was being made.`;
+      if(!assessed) msg+=` You never confirmed what it was.`;
+      else if(!alerted) msg+=` And no one else had been alerted.`;
+      return msg;
+    default:
+      return `The attempt ended before the spill was safely contained.`;
+  }
+}
+
+/* skipped-assessment special note used in debrief coach line */
+function skippedAssessmentLink(reason){
+  return (!G.assessed && (reason==='wrong_neutraliser'||reason==='wrong_containment'||reason==='water'));
+}
+
+/* ---------------- Render debrief ---------------- */
+function renderDebrief(reason, extra, scoreObj, results){
+  const s=G.spill;
+  const passed=(reason==='success');
+
+  // Build timeline including skipped steps
+  const rows=[];
+  const seen={};
+  G.actions.forEach(a=>{
+    if(!seen[a.step]) seen[a.step]=a; // first occurrence defines the badge
+    rows.push(a);
+  });
+  // Determine skipped major steps (never appeared)
+  const majors=['ASSESS','ALERT','PPE','CONTAIN'];
+  const doneSteps=new Set(G.actions.map(a=>a.step));
+  const skipped=majors.filter(m=>!doneSteps.has(m));
+
+  const stepLabel={ASSESS:'Assessed the spill',ALERT:'Raised the alarm',PPE:'Donned PPE',CONTAIN:'Applied containment'};
+
+  let tlHtml='';
+  rows.forEach(a=>{
+    const badge = a.ok==='ok'?['tl-ok','✓'] : a.ok==='order'?['tl-order','⚠'] : a.ok==='wrong'?['tl-wrong','✗'] : ['tl-skip','—'];
+    tlHtml+=`<li>
+      <span class="tl-badge ${badge[0]}">${badge[1]}</span>
+      <span>
+        <span class="tl-main">${stepLabel[a.step]||a.step}</span><br>
+        <span class="tl-sub">${a.note||''}</span>
+      </span>
+      <span class="tl-time">${fmtT(a.t)}</span>
+    </li>`;
+  });
+  skipped.forEach(st=>{
+    tlHtml+=`<li>
+      <span class="tl-badge tl-skip">—</span>
+      <span>
+        <span class="tl-main">${stepLabel[st]}</span><br>
+        <span class="tl-sub">Skipped — never performed this attempt</span>
+      </span>
+      <span class="tl-time">—</span>
+    </li>`;
+  });
+
+  // Strongest step + one thing to fix
+  const strongest = deriveStrongest(reason, scoreObj);
+  const fix = deriveFix(reason, skipped);
+
+  const verdictClass=passed?'verdict-pass':'verdict-fail';
+  const verdictTxt=passed?'Spill safely contained':'Attempt failed';
+
+  const ringColor=passed?'var(--green-mid)':(scoreObj.score>=50?'var(--hazard-amber)':'var(--hazard-red)');
+  const circ=2*Math.PI*44, dash=circ*(scoreObj.score/100);
+
+  debriefCard.innerHTML=`
+    <div class="subtitle">Debrief — ${s.name}${s.fumes?' (volatile)':''}</div>
+    <span class="verdict-tag ${verdictClass}">${verdictTxt}</span>
+    <h1 style="font-size:30px;">${passed?'Well handled.':'Let’s walk it back.'}</h1>
+
+    <div class="debrief-grid">
+      <div>
+        <div style="font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-soft);font-weight:800;">What you actually did</div>
+        <ul class="timeline">${tlHtml}</ul>
+      </div>
+      <div>
+        <div class="score-ring">
+          <div class="ring">
+            <svg width="104" height="104">
+              <circle cx="52" cy="52" r="44" fill="none" stroke="#e9e4d8" stroke-width="9"/>
+              <circle cx="52" cy="52" r="44" fill="none" stroke="${ringColor}" stroke-width="9"
+                      stroke-linecap="round" stroke-dasharray="${dash.toFixed(1)} ${circ.toFixed(1)}"/>
+            </svg>
+            <div class="num"><b>${scoreObj.score}</b><span>/ 100</span></div>
+          </div>
+          <div>
+            <div class="rubric">
+              <div><span>Sequence &amp; order</span><b>${scoreObj.seqPts}/40</b></div>
+              <div><span>PPE completeness</span><b>${scoreObj.ppePts}/20</b></div>
+              <div><span>Containment choice</span><b>${scoreObj.containPts}/25</b></div>
+              <div><span>Time remaining</span><b>${scoreObj.timePts}/15</b></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="real-lab">
+          <h3>In a real lab…</h3>
+          <p>${realLabParagraph(reason)}</p>
+        </div>
+
+        <div class="coach-row">
+          <div class="lbl">Strongest step</div>
+          <div class="val">${strongest}</div>
+        </div>
+        <div class="coach-row fix">
+          <div class="lbl">Fix this next attempt</div>
+          <div class="val">${fix}</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="center" style="margin-top:26px;">
+      <button class="btn" id="retryBtn">Try a different spill ▶</button>
+    </div>
+    <span class="wordmark-in">Erudithe</span>
+  `;
+  debriefOverlay.classList.remove('hidden');
+  $('#retryBtn').addEventListener('click', startAttempt);
+  $('#retryBtn').focus();
+}
+
+function deriveStrongest(reason, sc){
+  if(G.assessed && G.alerted && ppeComplete() && reason==='success') return 'A clean, correctly-ordered response from start to finish.';
+  if(ppeComplete()) return 'You fully protected yourself before handling the chemical.';
+  if(G.alerted) return 'You raised the alarm, so others were aware.';
+  if(G.assessed) return 'You identified the chemical before acting.';
+  return 'You engaged with the scene and made decisions under pressure.';
+}
+function deriveFix(reason, skipped){
+  if(reason==='exposure') return 'Complete all three PPE items before your hands go anywhere near the spill.';
+  if(reason==='wrong_neutraliser') return G.assessed? 'Match the neutraliser to the chemical: acid takes a caustic-neutralising bicarbonate, caustic takes an acid.' : 'Assess first — identify the chemical before you choose a containment.';
+  if(reason==='wrong_containment') return 'A solvent is absorbed and bunded, not neutralised — reach for pads and a spill sock.';
+  if(reason==='water') return 'Never wash a chemical spill toward the drain or bench edge — contain it in place.';
+  if(reason==='timeout') return skipped.length? ('Move sooner — you never got to: '+skipped.join(', ').toLowerCase()+'.') : 'Commit to each step faster; hesitation let the spill spread.';
+  if(!G.alerted) return 'Raise the alarm — notifying others is a step, not an optional courtesy.';
+  if(reason==='success') return 'Keep this exact order; it is the professional standard.';
+  return 'Assess, alert, protect, then contain — in that order.';
+}
+
+/* ============================================================================
+   BOOT
+   ========================================================================== */
+$('#startBtn').addEventListener('click', startAttempt);
+setObjective('START');
+renderSteps();
+
+// Expose a couple of hooks for demo/testing without frameworks.
+window.SpillSim = { start:startAttempt, state:()=>G };
+</script>
